@@ -1255,3 +1255,28 @@ html[data-swift-themed] .fc-daygrid-event {
     align-items: flex-start;
     white-space: normal;
 }
+
+/* ------------------------------------------------------------------
+   The brand mark
+
+   Frappe sizes these slots for a small square glyph. The theme's own mark
+   carries more detail than that, so it gets a little more room.
+
+   Matched by the file's own path rather than by the slot it sits in: the
+   sidebar header also draws a workspace's desktop icon, and an earlier
+   version of this enlarged those too. `/assets/swift_theme/icons/` is only
+   ever the theme's own artwork, so nothing else can be caught by it - not a
+   workspace icon, and not a logo the site chose for itself.
+
+   The attribute is still required: it is absent the moment Website Settings
+   carries an App Logo, which is the point at which the theme stops having an
+   opinion about any of this.
+
+   object-fit keeps a non-square file from being stretched, and the box is
+   left alone, so no row grows and no layout shifts.
+   ------------------------------------------------------------------ */
+html[data-swift-brand-mark="own"] img[src*="/assets/swift_theme/icons/"] {
+  width: 30px;
+  height: 30px;
+  object-fit: contain;
+}

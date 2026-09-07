@@ -34,6 +34,27 @@ html[data-swift-themed] body::after {
   content: none;
 }
 
+
+/* The page wrapper has to let it through.
+
+   Frappe paints `.page-container` with `background-color: var(--bg-color)`,
+   and that element is as tall as the content, not the viewport, and scrolls
+   inside `.main-section`. So an opaque sheet sat over the fixed backdrop and
+   the only place anyone ever saw one was past the end of a long page - which
+   is exactly what it looked like: a band of artwork under the last card.
+
+   Show Backdrop Through Panels did not reach this. It redefines --card-bg,
+   --fg-color and the other surface tokens, and this one element uses
+   --bg-color, which is a background, not a surface.
+
+   Scoped to the attribute being present: it is removed when no backdrop is
+   drawn, so a desk with backdrops off keeps Frappe's own flat page exactly as
+   it was. "none" draws flat --bg-color itself, so that case is unchanged too -
+   the same colour, one layer further back. */
+html[data-swift-themed][data-swift-backdrop] .page-container {
+  background-color: transparent;
+}
+
 /* ------------------------------------------------------------------
    1. AURORA — large soft lights drifting. Colourful without being loud.
    ------------------------------------------------------------------ */

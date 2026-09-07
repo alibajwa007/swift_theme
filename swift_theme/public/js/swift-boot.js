@@ -165,6 +165,9 @@
     // The home page's own look. "Follow Theme" is the absence of a preset,
     // so it is stored as "" and paints from the theme tokens as before.
     applyAttr("home-preset",      get("homePreset")     || "");
+    // Set only while the desk is drawing the theme's own mark, so the CSS that
+    // enlarges it never touches a logo the site chose for itself.
+    applyAttr("brand-mark", serverBoot && serverBoot.brand_mark_is_ours ? "own" : "");
     if (get("perf")      !== "off") applyAttr("perf", "on");
     if (get("anim")      === "off") applyAttr("anim", "off");
     if (get("scrollbar") !== "off") applyAttr("scrollbar", "on");
@@ -654,4 +657,46 @@
     }
 
     // Replaces rather than skips, so edits to Custom CSS apply on save.
+
+    /* ---- build line ----
+
+       Written to the console once per page load. The table below is offset
+       character codes rather than literals, so the shipped bundle cannot be
+       searched for the product name. That is presentation, not protection:
+       the output is plain in devtools and the source is public. Attribution
+       is a licensing question - see README. */
+    var META = [
+        [88, 125, 106, 120, 127, 108, 96, 41, 94, 115, 108, 117, 110],
+        [72, 116, 114, 42, 86, 111, 119, 116, 114, 112, 121],
+        [111, 124, 125, 122, 126, 65, 55, 56, 129, 130, 126, 54, 122, 127, 108,
+         117, 124, 110, 130, 109, 108, 105, 124, 126, 57, 106, 119, 118, 57],
+        [122, 127, 114, 112, 127, 102, 124, 113, 111, 120, 108],
+    ];
+
+    function read(row) {
+        var out = "";
+        for (var i = 0; i < row.length; i++) out += String.fromCharCode(row[i] - 7 - (i % 5));
+        return out;
+    }
+
+    function stamp() {
+        if (stamp.seen || !window.console || !console.log) return;
+        stamp.seen = 1;
+        var v = (window.frappe && frappe.boot && frappe.boot.versions
+                 && frappe.boot.versions[read(META[3])]) || "";
+        var a = "#22b6e6";
+        // Handed to the timer already bound, so the console attributes the line
+        // to the timer rather than printing this file and line beside it.
+        setTimeout(console.log.bind(
+            console,
+            "%c" + read(META[0]) + (v ? " v" + v : "") + "%c\n" + read(META[1]) + "%c\n" + read(META[2]),
+            "font: 600 15px/1.6 system-ui, sans-serif; color: " + a + ";",
+            "font: 400 12px/1.7 system-ui, sans-serif; color: #7b8794;",
+            "font: 500 12px/1.7 system-ui, sans-serif; color: " + a + ";"
+        ), 0);
+    }
+
+    if (window.frappe && frappe.after_ajax) frappe.after_ajax(stamp);
+    else if (window.jQuery) jQuery(document).on("app_ready", stamp);
+    else stamp();
 })();
