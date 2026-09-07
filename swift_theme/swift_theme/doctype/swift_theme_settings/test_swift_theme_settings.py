@@ -1088,6 +1088,52 @@ class TestSwiftThemeBackdrops(IntegrationTestCase):
     DESK_CSS = ("swift-preset-base.css", "swift-backdrops.css",
                 "swift-desk.css", "swift-perf.css")
 
+    def test_the_page_wrapper_lets_the_backdrop_through(self):
+        """Issue #36: the backdrop only showed past the end of a long page.
+
+        Frappe paints `.page-container` with `background-color: var(--bg-color)`
+        and sizes it to the content, not the viewport, inside the scrolling
+        `.main-section`. So an opaque sheet covered the fixed backdrop and the
+        only place it was ever visible was below the last card.
+
+        Show Backdrop Through Panels did not reach it either - that redefines
+        the surface tokens (--card-bg, --fg-color, ...), and this element uses
+        --bg-color, which is not one of them.
+        """
+        wins = [
+            (selector, body)
+            for selector, body in css_rules("swift-backdrops.css")
+            if ".page-container" in selector and "background" in body
+        ]
+        self.assertTrue(
+            wins, "nothing makes .page-container transparent, so no backdrop is visible")
+
+        for selector, body in wins:
+            self.assertIn(
+                "[data-swift-backdrop]", selector,
+                f"{selector} is not scoped to a backdrop being drawn, so a desk "
+                "with backdrops off loses Frappe's own page background")
+            self.assertRegex(
+                body, r"background-color:\s*transparent",
+                f"{selector} must clear the fill, not repaint it")
+
+    def test_backdrop_layers_cover_the_viewport_not_the_document(self):
+        """The two layers must be fixed and full-bleed.
+
+        `.page-container` scrolls with the content; if the backdrop were
+        positioned against the document it would scroll away from the viewport
+        the moment the page got long.
+        """
+        base = [
+            (selector, body)
+            for selector, body in css_rules("swift-backdrops.css")
+            if selects_the_backdrop(selector) and "position:" in body
+        ]
+        self.assertTrue(base, "the backdrop layers have no position rule")
+        for selector, body in base:
+            self.assertRegex(body, r"position:\s*fixed", f"{selector} is not fixed")
+            self.assertRegex(body, r"inset:\s*0", f"{selector} is not full-bleed")
+
     def test_perf_mode_does_not_erase_the_backdrop(self):
         """Perf mode ships on, so whatever it does to the backdrop is what
         everyone sees.
