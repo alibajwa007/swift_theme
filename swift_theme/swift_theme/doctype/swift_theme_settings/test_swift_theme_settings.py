@@ -190,6 +190,42 @@ def settings_patched(**values):
 
 
 @contextmanager
+def site_logo(value):
+    """Give the site an App Logo of its own for a test, then put it back."""
+    previous = frappe.db.get_single_value("Website Settings", "app_logo")
+    try:
+        frappe.db.set_single_value("Website Settings", "app_logo", value)
+        frappe.clear_cache()
+        yield
+    finally:
+        frappe.db.set_single_value("Website Settings", "app_logo", previous)
+        frappe.clear_cache()
+
+
+@contextmanager
+def no_site_logo():
+    """Clear the site's own App Logo for a test, then put it back.
+
+    Both singles, because the theme keeps out if either one is filled: Website
+    Settings is where a site sets it, and Frappe copies it onto Navbar
+    Settings. Written straight to the rows rather than through a save - these
+    doctypes validate a lot that has nothing to do with logos, and one unrelated
+    bad value would fail a test about branding.
+    """
+    singles = ("Website Settings", "Navbar Settings")
+    previous = {dt: frappe.db.get_single_value(dt, "app_logo") for dt in singles}
+    try:
+        for dt in singles:
+            frappe.db.set_single_value(dt, "app_logo", "")
+        frappe.clear_cache()
+        yield
+    finally:
+        for dt, value in previous.items():
+            frappe.db.set_single_value(dt, "app_logo", value)
+        frappe.clear_cache()
+
+
+@contextmanager
 def stale_single_value(field, value):
     """Put a value in the row that the field would reject on save.
 
@@ -1085,6 +1121,141 @@ class TestSwiftThemeBackdrops(IntegrationTestCase):
             self.assertIn(data.get("backdrop"), BACKDROPS,
                           f"{name} has no valid default backdrop")
 
+    def test_the_brand_mark_replaces_every_app_logo(self):
+        """One mark, not three vendors' logos.
+
+        Frappe, ERPNext and HR each ship an `icon_type == "App"` desktop icon
+        carrying their own `logo_url`, and the launcher draws all three. The
+        theme replaces them so an install reads as one product.
+        """
+        from swift_theme.api.boot import _apply_brand_mark, _brand_mark
+
+        boot = frappe._dict(
+            app_logo_url="/assets/frappe/images/frappe-framework-logo.svg",
+            app_data=[{"app_name": "erpnext", "app_logo_url": "/assets/erpnext/images/erpnext-logo.svg"}],
+            desktop_icons=[
+                {"label": "ERPNext", "icon_type": "App", "logo_url": "/assets/erpnext/images/erpnext-logo.svg"},
+                {"label": "Payroll", "icon_type": "Link", "logo_url": "/assets/hrms/icons/desktop_icons/salary_payout.svg"},
+                {"label": "Selling", "icon_type": "Module"},
+            ],
+        )
+        # This site may carry an App Logo of its own, which is the theme's cue
+        # to keep out entirely - cleared here so the override itself is what
+        # is under test.
+        with no_site_logo():
+            mark = _brand_mark()
+            _apply_brand_mark(boot)
+
+        self.assertEqual(boot.app_logo_url, mark)
+        self.assertEqual(boot.app_data[0]["app_logo_url"], mark)
+        self.assertEqual(boot.desktop_icons[0]["logo_url"], mark, "the App row still shows ERPNext")
+        self.assertEqual(
+            boot.desktop_icons[1]["logo_url"],
+            "/assets/hrms/icons/desktop_icons/salary_payout.svg",
+            "a module icon was replaced - the launcher would be a wall of identical tiles")
+        self.assertNotIn("logo_url", boot.desktop_icons[2],
+                         "an icon with no logo of its own was given one")
+
+    def test_the_brand_mark_is_never_a_missing_file(self):
+        """Pointing the desk at a file that is not there replaces every app
+        icon with a broken image, which is worse than the logos it fixes."""
+        from swift_theme.api.boot import FALLBACK_LOGO, SHIPPED_LOGO, _brand_mark, _shipped_logo_exists
+
+        for path in (SHIPPED_LOGO, FALLBACK_LOGO):
+            self.assertTrue(path.startswith("/assets/swift_theme/"),
+                            f"{path} is not served by this app")
+
+        on_disk = os.path.join(
+            frappe.get_app_path(APP), "public", "icons", os.path.basename(FALLBACK_LOGO))
+        self.assertTrue(os.path.exists(on_disk), f"the fallback {FALLBACK_LOGO} does not ship")
+
+        _shipped_logo_exists.cache_clear()
+        with no_site_logo(), settings_patched(brand_logo=""):
+            self.assertEqual(
+                _brand_mark(),
+                SHIPPED_LOGO if _shipped_logo_exists() else FALLBACK_LOGO)
+
+    # The build line's own content, as a digest. Kept this way on purpose: the
+    # point of the offset table in swift-boot.js is that the strings appear
+    # nowhere in plain text, and a test that spelled them out would put them
+    # back - in a file that ships with the app. A digest still fails the moment
+    # any of the three values changes.
+    BUILD_LINE_SHA256 = "9a20249c525f27dac335e3822a693c25e111926270c6940f6fb54dfb52412770"
+
+    def test_the_console_notice_carries_the_right_details(self):
+        """The one place the theme names itself in a running desk.
+
+        Decoded from what ships rather than matched against literals, so a file
+        that had been emptied out cannot pass.
+        """
+        import hashlib
+
+        js = read_js("swift-boot.js")
+        rows = re.search(r"var META = \[(.*?)\n    \];", js, re.S)
+        self.assertTrue(rows, "the build line's table is gone from swift-boot.js")
+
+        decoded = [
+            "".join(
+                chr(int(n) - 7 - (i % 5))
+                for i, n in enumerate(re.findall(r"\d+", row))
+            )
+            for row in re.findall(r"\[([\d,\s]+)\]", rows.group(1))
+        ]
+        self.assertEqual(len(decoded), 4, "the table lost a row")
+        self.assertEqual(
+            hashlib.sha256("|".join(decoded[:3]).encode()).hexdigest(),
+            self.BUILD_LINE_SHA256,
+            "the build line no longer says what it should")
+        self.assertEqual(decoded[3], APP, "the version is read from the wrong app")
+
+        self.assertIn("stamp.seen", js, "nothing stops the line repeating down the console")
+        self.assertIn(
+            "setTimeout(console.log.bind(", js,
+            "called directly, so the console prints this file and line beside the output")
+        self.assertNotIn(
+            "swift-runtime", open(os.path.join(
+                frappe.get_app_path(APP), "public", "js", "swift_theme.bundle.js")).read(),
+            "the bundle still imports a file that no longer exists")
+
+    def test_the_theme_keeps_out_when_the_site_has_its_own_logo(self):
+        """Website Settings > App Logo is the site's own decision.
+
+        Once it is filled the theme draws no mark, sets no attribute, and every
+        app gets back whatever Frappe would have given it.
+        """
+        from swift_theme.api.boot import _apply_brand_mark, _brand_mark
+
+        boot = frappe._dict(
+            app_logo_url="/assets/frappe/images/frappe-framework-logo.svg",
+            desktop_icons=[{"label": "ERPNext", "icon_type": "App",
+                            "logo_url": "/assets/erpnext/images/erpnext-logo.svg"}],
+        )
+        with site_logo("/files/their-own.png"):
+            self.assertIsNone(_brand_mark(), "the theme still has an opinion")
+            _apply_brand_mark(boot)
+
+        self.assertEqual(boot.app_logo_url, "/assets/frappe/images/frappe-framework-logo.svg")
+        self.assertEqual(boot.desktop_icons[0]["logo_url"],
+                         "/assets/erpnext/images/erpnext-logo.svg")
+
+    def test_only_the_themes_own_artwork_is_enlarged(self):
+        """Scoped by the file's path, not by the slot.
+
+        The sidebar header also draws workspace desktop icons; an earlier
+        version of this rule matched any image inside it and blew those up too.
+        """
+        rules = [
+            (selector, body)
+            for selector, body in css_rules("swift-desk.css")
+            if "brand-mark" in selector
+        ]
+        self.assertTrue(rules, "nothing enlarges the brand mark")
+        for selector, body in rules:
+            self.assertIn('img[src*="/assets/swift_theme/icons/"]', selector,
+                          f"{selector} can catch artwork that is not ours")
+            self.assertIn('[data-swift-brand-mark="own"]', selector,
+                          f"{selector} applies even when the site chose its own logo")
+
     DESK_CSS = ("swift-preset-base.css", "swift-backdrops.css",
                 "swift-desk.css", "swift-perf.css")
 
@@ -1722,7 +1893,7 @@ class TestSwiftThemeBackdrops(IntegrationTestCase):
     def test_backdrop_reaches_the_client(self):
         with no_user_preset():
             with settings_patched(color_mode="Theme Preset", active_preset="Loki",
-                                  backdrop=""):
+                                  backdrop="", enable_backdrops=1):
                 prefs = get_effective_prefs()
         self.assertEqual(prefs["backdrop"], PREMIUM_THEMES["Loki"]["backdrop"])
         self.assertEqual(prefs["backdrop_pinned"], 0)
@@ -1730,7 +1901,7 @@ class TestSwiftThemeBackdrops(IntegrationTestCase):
         # A leftover Settings choice must not sit over the preset's own.
         with no_user_preset():
             with settings_patched(color_mode="Theme Preset", active_preset="Loki",
-                                  backdrop="Facets"):
+                                  backdrop="Facets", enable_backdrops=1):
                 prefs = get_effective_prefs()
         self.assertEqual(prefs["backdrop"], PREMIUM_THEMES["Loki"]["backdrop"])
         self.assertEqual(prefs["backdrop_pinned"], 0)
@@ -1739,7 +1910,8 @@ class TestSwiftThemeBackdrops(IntegrationTestCase):
         """With no preset in play, the Settings choice is the one that ships."""
         with no_user_preset():
             with settings_patched(color_mode="Custom Colors", primary_color="#39e4a5",
-                                  secondary_color="#7c3aed", backdrop="Facets"):
+                                  secondary_color="#7c3aed", backdrop="Facets",
+                                  enable_backdrops=1):
                 prefs = get_effective_prefs()
         self.assertEqual(prefs["backdrop"], "facets")
         self.assertEqual(prefs["backdrop_pinned"], 1)

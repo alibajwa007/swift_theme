@@ -1,3 +1,6 @@
+import functools
+import os
+
 import frappe
 
 from swift_theme.scripts.colour import derive_roles
@@ -55,8 +58,94 @@ def boot_session(bootinfo):
     bootinfo.swift_theme = get_effective_prefs()
 
 
+SHIPPED_LOGO = "/assets/swift_theme/icons/quantex-beast.svg"
+FALLBACK_LOGO = "/assets/swift_theme/icons/favicon.svg"
+
+
+def _site_has_its_own_logo():
+    """Whether this site has already said what its logo is.
+
+    Website Settings > App Logo and Navbar Settings > App Logo are Frappe's own
+    place for it, and a site that has filled either one has made a decision.
+    The theme steps aside completely at that point - no mark, no resizing, and
+    every app keeps whatever Frappe would have given it.
+    """
+    return bool(
+        frappe.get_website_settings("app_logo")
+        or frappe.db.get_single_value("Navbar Settings", "app_logo")
+    )
+
+
+def _brand_mark():
+    """The one image the desk should show for every app, or None to keep out.
+
+    Frappe gives each installed app its own logo, and the sidebar header draws
+    whichever app's workspace you happen to be in - so ERPNext's logo appears
+    on ERPNext pages, HR's on HR pages, and one install reads as three
+    products.
+
+    Order: the site's own choice comes first and is left alone; then a logo
+    attached in Swift Theme Settings; then the theme's own mark.
+    """
+    if _site_has_its_own_logo():
+        return None
+    s = _settings()
+    if s.get("brand_logo"):
+        return s.get("brand_logo")
+    return SHIPPED_LOGO if _shipped_logo_exists() else FALLBACK_LOGO
+
+
+@functools.lru_cache(maxsize=1)
+def _shipped_logo_exists():
+    """Whether the brand mark is actually on disk.
+
+    Checked rather than assumed: pointing the desk at a file that is not there
+    replaces every app icon with a broken image, which is worse than the
+    per-app logos it was meant to fix. Cached - the answer only changes when
+    the app is redeployed, and this runs on every boot.
+    """
+    return os.path.exists(
+        os.path.join(frappe.get_app_path("swift_theme"), "public", "icons", os.path.basename(SHIPPED_LOGO))
+    )
+
+
 def extend_bootinfo(bootinfo):
     bootinfo.swift_theme = get_effective_prefs()
+    _apply_brand_mark(bootinfo)
+
+
+def _apply_brand_mark(bootinfo):
+    """Point every logo the desk reads at the one mark.
+
+    Three places ask, and all three have to agree or the mark changes as you
+    move around the desk:
+
+    * `app_logo_url`, which anything reading the site logo uses;
+    * every entry in `app_data` - the sidebar header falls back to
+      `app_data[0].app_logo_url` when a workspace has no icon of its own;
+    * the `logo_url` on each `icon_type == "App"` desktop icon. These are the
+      app logos on the launcher - `erpnext-logo.svg`, `frappe-hr-logo.svg`,
+      `frappe-framework-logo.svg` - and they are what makes an install read as
+      three vendors' products stacked together.
+
+    Only the App rows. The other icons carrying a `logo_url` are modules -
+    Payroll, Leaves, Subcontracting - and each one means something; replacing
+    those with the brand mark would turn the launcher into a wall of identical
+    tiles.
+    """
+    mark = _brand_mark()
+    if not mark:
+        return
+
+    bootinfo.app_logo_url = mark
+    for app in bootinfo.get("app_data") or []:
+        app["app_logo_url"] = mark
+    for icon in bootinfo.get("desktop_icons") or []:
+        if icon.get("icon_type") == "App" and icon.get("logo_url"):
+            icon["logo_url"] = mark
+    for app in (bootinfo.get("apps_data") or {}).get("apps") or []:
+        if app.get("logo"):
+            app["logo"] = mark
 
 
 def _calendar_fields():
@@ -180,6 +269,10 @@ def get_effective_prefs():
         "enable_print_theming":    int(s.get("enable_print_theming") or 0),
 
         # brand
+        # Whether the logo the desk is about to draw is the theme's own. Only
+        # that one is scaled up; a site's own logo is drawn at Frappe's size,
+        # because it was made for that slot and stretching it is not ours to do.
+        "brand_mark_is_ours": 1 if (_brand_mark() and not s.get("brand_logo")) else 0,
         "brand_name":      s.get("brand_name") or "",
         "brand_logo":      s.get("brand_logo") or "",
         "brand_logo_dark": s.get("brand_logo_dark") or "",
